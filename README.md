@@ -18,7 +18,7 @@ To install the plug-in manually:
 
 ## Usage
 
-The easiest way to access the plugin's features is via the Command Palette. Just press `Cmd+P` (`Ctrl+P` on Windows) and start typing "Reddit" to see a list of supported commands.
+The easiest way to access the plugin's features is via the Command Palette. First put your cursor where you want the blocks to be inserted. Then just press `Cmd+P` (`Ctrl+P` on Windows) and start typing "Reddit" to see a list of supported commands.
 
 <img width="749" alt="CleanShot 2022-08-01 at 00 01 57@2x" src="https://user-images.githubusercontent.com/2079548/182091184-68a8431d-bd53-4256-9104-d203bf5a45f3.png">
 
@@ -28,6 +28,7 @@ The following settings are supported:
 
 * **Subreddit**: Specify the subreddit you'd like to pull posts from. _(Required.)_
 * **Sort**: Select the sorting order, which should be one of the supported sorting options on Reddit itself (e.g. Top, Rising, New, Random, etc.). _(Optional, defaults to Rising.)_
+* **Number of posts**: The number of posts to retrieve for each subreddit. _(Optional, defaults to 1.)_
 * **Hashtag**: If you'd like each post to be tagged using a custom keyword, so that you can locate all the Reddit content in your graph for instance. A value like "#roam-reddit" works well. _(Optional.)_
 * **Title only**: Toggle this option to only pull the title of the post (rather than the title+body).
 * **Blocked words**: A comma-separated list of filter words. _(Optional.)_

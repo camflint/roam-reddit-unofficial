@@ -3,16 +3,18 @@ const PLUGIN_FRIENDLY_NAME = 'Roam Reddit';
 const LOG_PREFIX = '[roam-reddit]';
 
 // Setting keys.
-const SETTING_SUBREDDIT_KEY = 'subreddit';
+const SETTING_SUBREDDITS_KEY = 'subreddits';
 const SETTING_SORT_KEY = 'sort';
-const SETTING_HASHTAG = 'hashtag';
+const SETTING_NUMBER_OF_POSTS_KEY = 'number-of-posts';
+const SETTING_HASHTAG_KEY = 'hashtag';
 const SETTING_TITLE_ONLY_KEY = 'title-only';
 const SETTING_BLOCKED_WORDS_KEY = 'blocked-words';
 const SETTING_MINIMUM_VOTES_KEY = 'minimum-votes';
 
 // Setting defaults.
-const DEFAULT_SUBREDDIT = 'LifeProTips'; // ,LifeProTips,todayilearned, ...
-const DEFAULT_SORT = 'rising'; // ,new,rising,top,random, ...
+const DEFAULT_SUBREDDITS = ['LifeProTips', 'todayilearned'];
+const DEFAULT_SORT = 'Rising'; // ,new,rising,top,random, ...
+const DEFAULT_NUMBER_OF_POSTS = 1;
 const DEFAULT_HASHTAG = null; // #roam-reddit
 const DEFAULT_TITLE_ONLY = false;
 const DEFAULT_BLOCKED_WORDS = []; // ['LPT request']
@@ -20,8 +22,9 @@ const DEFAULT_MINIMUM_VOTES = 0; // 1000
 
 // Setting active values.
 let UserSettings = {
-    subreddit: DEFAULT_SUBREDDIT,
+    subreddits: DEFAULT_SUBREDDITS,
     sort: DEFAULT_SORT,
+    numberOfPosts: DEFAULT_NUMBER_OF_POSTS,
     hashtag: DEFAULT_HASHTAG,
     titleOnly: DEFAULT_TITLE_ONLY,
     blockedWords: DEFAULT_BLOCKED_WORDS,
@@ -62,14 +65,14 @@ function logErr(str, ...args) {
     console.error(`${LOG_PREFIX}: ${str}`, ...args);
 }
 
-async function tryGetFilteredRedditPosts() {
-    const { posts: posts1, error } = await tryGetRedditPosts();
+async function tryGetFilteredRedditPosts(subreddit) {
+    const { posts: posts1, error } = await tryGetRedditPosts(subreddit);
     if (error) {
         logDebug(`tryGetFilteredRedditPosts: detected error, skipping`);
         return { posts: posts1, error }; // pass thr;
     } else {
         const posts2 = filterRedditPosts(posts1);
-        logDebug(`tryGetFilteredRedditPosts: filtered from ${posts1.length} to ${posts2.length} posts`);
+        logDebug(`tryGetFilteredRedditPosts: filtered from ${posts1.length} to ${posts2.length} posts`, posts2);
         return { posts: posts2 };
     }
 }
@@ -81,17 +84,20 @@ function filterRedditPosts(posts) {
     // Minimum vote count.
     posts = posts.filter(p => UserSettings.minimumVotes <= p.ups);
 
+    // Number of posts cap (apply last).
+    posts = posts.splice(0, UserSettings.numberOfPosts);
+
     return posts;
 }
 
 // tryGetRedditPosts: returns an object like: { posts: [], error?: {} }.
-async function tryGetRedditPosts() {
+async function tryGetRedditPosts(subreddit) {
     let result = {
         posts: [],
         error: undefined,
     };
     try {
-        const url = buildRedditUrl();
+        const url = buildRedditUrl(subreddit);
         logDebug(`tryGetRedditPosts: fetching posts: url=${url}`);
         const response = await fetch(url);
         if (!response.ok) {
@@ -109,8 +115,8 @@ async function tryGetRedditPosts() {
     return result;
 }
 
-function buildRedditUrl() {
-    const url = `https://www.reddit.com/r/${UserSettings.subreddit}/${UserSettings.sort}/.json?limit=10`;
+function buildRedditUrl(subreddit) {
+    const url = `https://www.reddit.com/r/${subreddit}/${UserSettings.sort}/.json?limit=25`;
     logDebug(`buildRedditUrl: returning: url=${url}`);
     return url;
 }
@@ -139,7 +145,8 @@ async function extractPostsFromResponse(body) {
             }
 
             // item.data is a Post
-            const { subreddit, title, selftext, author, url, ups } = item.data;
+            const { subreddit, title, selftext, author, permalink, ups } = item.data;
+            const url = `https://www.reddit.com${permalink}`;
             result.push({
                 subreddit,
                 title,
@@ -202,11 +209,6 @@ function padNum(num) {
     return String(num).padStart(2, '0');
 }
 
-function disambiguatePosts(posts) {
-    // TODO
-    return posts[0];
-}
-
 function formatPost(post) {
     let { subreddit, title, selftext, author, url } = post;
     let result;
@@ -235,32 +237,46 @@ function formatNotice(text, prefix = 'NOTE') {
     return result;
 }
 
-async function run(caller = 'none') {
-    logDebug(`run: starting, caller=${caller}`);
-    const { posts, error } = await tryGetFilteredRedditPosts();
-    let content;
+async function runForSingleSubreddit(subreddit, caller = 'none') {
+    logDebug(`runForSingleSubreddit: starting: subreddit=${subreddit}, caller=${caller}`);
+    const { posts, error } = await tryGetFilteredRedditPosts(subreddit);
+    let contents = [];
     if (error) {
-        content = formatNotice(error, /*prefix*/ 'ERROR');
+        contents = [formatNotice(error, /*prefix*/ 'ERROR')];
     } else if (!posts.length) {
-        content = formatNotice(`got nothing back from Reddit, maybe check your settings in Settings -> ${PLUGIN_FRIENDLY_NAME}`);
+        contents = [formatNotice(`got nothing back from Reddit, maybe check your settings in Settings -> ${PLUGIN_FRIENDLY_NAME}`)];
     } else {
-        const post = disambiguatePosts(posts);
-        content = formatPost(post);
+        contents = posts.map(formatPost);
     }
-    const didInsertBlock = await tryInsertRoamBlock(content);
-    logDebug(`run: completed, didInsertBlock=${didInsertBlock}`);
+    let insertedBlocks = 0;
+    for (const content of contents) {
+        if (await tryInsertRoamBlock(content)) {
+            insertedBlocks += 1;
+        }
+    }
+    logDebug(`runForSingleSubreddit: completed, insertedBlocks=${insertedBlocks}`);
+    return insertedBlocks > 0;
+}
+
+async function runForAllSubreddits(caller = 'none') {
+    logDebug(`runForAllSubreddits: starting: caller=${caller}`);
+    const promises = UserSettings.subreddits.map(
+        subreddit => runForSingleSubreddit(subreddit, caller),
+    );
+    const insertions = await Promise.all(promises);
+    logDebug(`runForAllSubreddits: completed: succeeded=${insertions.filter(i => !!i).length}`);
 }
 
 const panelConfig = {
     tabTitle: PLUGIN_FRIENDLY_NAME,
     settings: [{
-        id: SETTING_SUBREDDIT_KEY,
-        name: 'Subreddit',
-        description: '',
+        id: SETTING_SUBREDDITS_KEY,
+        name: 'Subreddits',
+        description: 'Comma-separated list of subreddits',
         action: {
             type: 'input',
-            placeholder: DEFAULT_SUBREDDIT,
-            onChange: wrappedOnChangeHandler(SETTING_SUBREDDIT_KEY),
+            placeholder: DEFAULT_SUBREDDITS[0],
+            onChange: wrappedOnChangeHandler(SETTING_SUBREDDITS_KEY),
         },
     }, {
         id: SETTING_SORT_KEY,
@@ -272,13 +288,21 @@ const panelConfig = {
             onChange: wrappedOnChangeHandler(SETTING_SORT_KEY),
         },
     }, {
-        id: SETTING_HASHTAG,
+        id: SETTING_NUMBER_OF_POSTS_KEY,
+        name: 'Number of posts',
+        action: {
+            type: 'input',
+            placeholder: DEFAULT_NUMBER_OF_POSTS,
+            onChange: wrappedOnChangeHandler(SETTING_NUMBER_OF_POSTS_KEY),
+        },
+    }, {
+        id: SETTING_HASHTAG_KEY,
         name: 'Hash tag',
         description: 'Leave blank if none desired',
         action: {
             type: 'input',
             placeholder: DEFAULT_HASHTAG,
-            onChange: wrappedOnChangeHandler(SETTING_HASHTAG),
+            onChange: wrappedOnChangeHandler(SETTING_HASHTAG_KEY),
         }
     }, {
         id: SETTING_TITLE_ONLY_KEY,
@@ -291,10 +315,10 @@ const panelConfig = {
     }, {
         id: SETTING_BLOCKED_WORDS_KEY,
         name: 'Blocked words',
-        description: 'Words or phrases that will be used to filter posts',
+        description: 'Comma-separated list of words or phrases that will be used to filter posts',
         action: {
             type: 'input',
-            placeholder: DEFAULT_BLOCKED_WORDS,
+            placeholder: DEFAULT_BLOCKED_WORDS.join(','),
             onChange: wrappedOnChangeHandler(SETTING_BLOCKED_WORDS_KEY),
         }
     }, {
@@ -342,6 +366,9 @@ function doUpdateSetting(rawKey, rawVal) {
         if (val && rawKey === SETTING_BLOCKED_WORDS_KEY) {
             UserSettings.blockedWordsRegExps = generateBlockedWordsRegExps(val);
         }
+        if (val && rawKey === SETTING_SUBREDDITS_KEY) {
+            reinstallCommands();
+        }
         if (timeouts[key]) {
             clearTimeout(timeouts[key]);
             timeouts[key] = undefined;
@@ -357,13 +384,13 @@ function cleanSettingValue(rawVal, forKey) {
     let didDefault = false;
     logDebug(`cleanSettingValue: starting: rawVal='${rawVal}', forKey=${forKey}`);
     switch (forKey) {
-        case SETTING_SUBREDDIT_KEY:
-            ({cleanVal, didDefault} = cleanString(rawVal, DEFAULT_SUBREDDIT));
+        case SETTING_SUBREDDITS_KEY:
+            ({cleanVal, didDefault} = cleanStringArray(rawVal, DEFAULT_SUBREDDITS));
             if (!cleanVal.length) {
-                cleanVal = DEFAULT_SUBREDDIT;
+                cleanVal = DEFAULT_SUBREDDITS;
             }
             break;
-        case SETTING_HASHTAG:
+        case SETTING_HASHTAG_KEY:
             ({cleanVal, didDefault} = cleanString(rawVal, DEFAULT_HASHTAG));
             // E.g. 'roam-reddit' or '#roam-reddit' or '##roam-reddit' -> '#roam-reddit'
             //  but '' -> ''
@@ -375,6 +402,9 @@ function cleanSettingValue(rawVal, forKey) {
             } else {
                 cleanVal = null;
             }
+            break;
+        case SETTING_NUMBER_OF_POSTS_KEY:
+            ({cleanVal, didDefault} = cleanNumber(rawVal, DEFAULT_NUMBER_OF_POSTS));
             break;
         case SETTING_SORT_KEY:
             ({cleanVal, didDefault} = cleanString(rawVal, DEFAULT_SORT));
@@ -454,37 +484,71 @@ function defaultIfThrows(func, default_) {
     }
 }
 
-function initializeSettings(source) {
+function populateAllSettings(source) {
     const blob = extensionAPI.settings.getAll();
-    logDebug(`initializeSettings: starting: keys.length=${Object.keys(blob).length}`, blob);
-    for (const [rawKey, rawVal] of Object.entries(blob)) {
+    logDebug(`initializeSettings: starting: blobKeys.length=${Object.keys(blob).length}`, blob);
+    const allEntries = [
+        ...Object.entries(blob),
+    ];
+    for (const [rawKey, rawVal] of allEntries) {
         doUpdateSetting(rawKey, rawVal);
     }
     logDebug(`initializeSettings: finished: triggeredBy=${source}`, UserSettings);
 }
 
-const RUN_COMMAND_LABEL = `${PLUGIN_FRIENDLY_NAME}: Run now`;
+const RUN_SINGLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve posts from`;
+const RUN_MULTIPLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve`;
+
+function formatCommandLabel(subreddit) {
+    return `${RUN_SINGLE_COMMAND_PREFIX} '${subreddit}'...`;
+}
+
+let lastInstalledSubreddits = [];
 
 function installCommands() {
+    if (lastInstalledSubreddits.length) {
+        logWarn(`installCommand: previous commands not uninstalled first!`);
+        lastInstalledSubreddits = [];
+    }
+    for (const subreddit of UserSettings.subreddits) {
+        roamAlphaAPI.ui.commandPalette.addCommand({
+            label: formatCommandLabel(subreddit),
+            callback: () => { return runForSingleSubreddit(subreddit, 'command-palette'); },
+        });
+        lastInstalledSubreddits.push(subreddit);
+        logDebug(`installCommands: installed subreddit=${subreddit}`);
+    }
     roamAlphaAPI.ui.commandPalette.addCommand({
-        label: RUN_COMMAND_LABEL,
-        callback: () => { return run('command-palette'); },
+        label: `${RUN_MULTIPLE_COMMAND_PREFIX} all subreddits`,
+        callback: () => { return runForAllSubreddits('command-palette'); },
     });
-    logDebug('initializeCommand: done');
+    logDebug(`installCommands: installed 'retrieve all'`);
 }
 
 function uninstallCommands() {
     roamAlphaAPI.ui.commandPalette.removeCommand({
-        label: RUN_COMMAND_LABEL,
+        label: `${RUN_MULTIPLE_COMMAND_PREFIX} all subreddits`,
     });
-    logDebug('deinitializeCommand: done');
+    logDebug(`uninstallCommands: uninstalled 'retrieve all'`);
+    for (const subreddit of lastInstalledSubreddits) {
+        roamAlphaAPI.ui.commandPalette.removeCommand({
+            label: formatCommandLabel(subreddit),
+        });
+        logDebug(`uninstallCommands: uninstalled ${subreddit}`);
+    }
+    lastInstalledSubreddits = [];
+}
+
+function reinstallCommands() {
+    uninstallCommands();
+    installCommands();
 }
 
 function onload({ extensionAPI: _extensionAPI }) {
     extensionAPI = _extensionAPI;
     extensionAPI.settings.panel.create(panelConfig);
     window.extensionAPI = extensionAPI; // TEMP
-    initializeSettings('onload');
+    populateAllSettings('onload');
     installCommands();
     logDebug('extension loaded');
 }
