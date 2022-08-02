@@ -1,9 +1,15 @@
 # roam-reddit
+
 Free unofficial Reddit plug-in for Roam Research. It's intended to pull one post at a time from a subreddit of your chosing into your daily notes page: like from r/LifeProTips, r/todayilearned, etc.
 
-<img width="910" alt="CleanShot 2022-08-01 at 00 02 16@2x" src="https://user-images.githubusercontent.com/2079548/182091234-4100d36c-bba8-4d7e-9d60-6d7fd417b83b.png">
+## Usage
+
+The easiest way to access the plugin's features is via the Command Palette. First put your cursor where you want the blocks to be inserted. Then just press `Cmd+P` (`Ctrl+P` on Windows) and start typing "Reddit" to see a list of supported commands.
+
+![image](https://user-images.githubusercontent.com/2079548/182274952-965f5721-8c7f-4939-8a4c-59d5be3f08cf.png)
 
 ## Installation
+
 There are two ways of installing roam-reddit into your Roam graph. Unless you're a developer, the best option is to install it through the official Roam Depot.
 
 ## Developer mode
@@ -15,12 +21,6 @@ To install the plug-in manually:
 4. Navigate to the folder containing this repo's source code.
 
 ![CleanShot 2022-07-31 at 23 57 02@2x](https://user-images.githubusercontent.com/2079548/182091080-679f8b78-4698-40bd-ada5-f4b03986a4ad.png)
-
-## Usage
-
-The easiest way to access the plugin's features is via the Command Palette. First put your cursor where you want the blocks to be inserted. Then just press `Cmd+P` (`Ctrl+P` on Windows) and start typing "Reddit" to see a list of supported commands.
-
-<img width="749" alt="CleanShot 2022-08-01 at 00 01 57@2x" src="https://user-images.githubusercontent.com/2079548/182091184-68a8431d-bd53-4256-9104-d203bf5a45f3.png">
 
 ## Configuration
 
