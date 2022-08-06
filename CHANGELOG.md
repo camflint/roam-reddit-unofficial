@@ -1,4 +1,12 @@
 # Changelog
+## [0.1.2] - 2022-08-06
+### Added
+- Support nesting all posts under a single node (with new setting).
+### Fixed
+- Switch setting values correctly populate now.
+- Default values are propagated back to UI on first use now.
+- Posts with empty bodies are formatted correctly.
+- The insertion node uses the `roamAlphaAPI` helpers now to select the active page or block, with fallback to today's daily notes page.
 
 ## [0.1.1] - 2022-08-01
 ### Added

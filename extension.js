@@ -7,15 +7,27 @@ const SETTING_SUBREDDITS_KEY = 'subreddits';
 const SETTING_SORT_KEY = 'sort';
 const SETTING_NUMBER_OF_POSTS_KEY = 'number-of-posts';
 const SETTING_HASHTAG_KEY = 'hashtag';
+const SETTING_GROUP_KEY = 'group';
 const SETTING_TITLE_ONLY_KEY = 'title-only';
 const SETTING_BLOCKED_WORDS_KEY = 'blocked-words';
 const SETTING_MINIMUM_VOTES_KEY = 'minimum-votes';
+const ALL_SETTING_KEYS = [
+    SETTING_SUBREDDITS_KEY,
+    SETTING_SORT_KEY,
+    SETTING_NUMBER_OF_POSTS_KEY,
+    SETTING_HASHTAG_KEY,
+    SETTING_GROUP_KEY,
+    SETTING_TITLE_ONLY_KEY,
+    SETTING_BLOCKED_WORDS_KEY,
+    SETTING_MINIMUM_VOTES_KEY,
+];
 
 // Setting defaults.
 const DEFAULT_SUBREDDITS = ['LifeProTips', 'todayilearned'];
 const DEFAULT_SORT = 'Rising'; // ,new,rising,top,random, ...
 const DEFAULT_NUMBER_OF_POSTS = 1;
-const DEFAULT_HASHTAG = null; // #roam-reddit
+const DEFAULT_HASHTAG = '#roam-reddit';
+const DEFAULT_GROUP = true;
 const DEFAULT_TITLE_ONLY = false;
 const DEFAULT_BLOCKED_WORDS = []; // ['LPT request']
 const DEFAULT_MINIMUM_VOTES = 0; // 1000
@@ -26,11 +38,20 @@ let UserSettings = {
     sort: DEFAULT_SORT,
     numberOfPosts: DEFAULT_NUMBER_OF_POSTS,
     hashtag: DEFAULT_HASHTAG,
+    group: DEFAULT_GROUP,
     titleOnly: DEFAULT_TITLE_ONLY,
     blockedWords: DEFAULT_BLOCKED_WORDS,
     blockedWordsRegExps: generateBlockedWordsRegExps(DEFAULT_BLOCKED_WORDS),
     minimumVotes: DEFAULT_MINIMUM_VOTES,
 };
+
+// Helper rules for datalog queries.
+const RULE_ANCESTORS = `[
+    [ (ancestor ?child ?parent)
+         [?parent :block/children ?child] ]
+    [ (ancestor ?child ?a)
+         [?parent :block/children ?child ]
+         (ancestor ?parent ?a) ] ]`;
 
 function roamSettingKeyToUserSettingKey(roamKey) {
     // E.g. 'blocked-words' -> 'blockedWords'
@@ -38,7 +59,7 @@ function roamSettingKeyToUserSettingKey(roamKey) {
     const [first] = words.splice(0, 1);
     const rest = words.map(w => w.slice(0, 1).toUpperCase() + w.slice(1));
     const userSettingKey = [first, ...rest].join('');
-    logDebug(`roamSettingKeyToUserSettingKey: returning: '${roamKey}' -> '${userSettingKey}'`);
+    logDebug(`roamSettingKeyToUserSettingKey: returning: ${roamKey} -> ${userSettingKey}`);
     return userSettingKey;
 }
 
@@ -78,16 +99,41 @@ async function tryGetFilteredRedditPosts(subreddit) {
 }
 
 function filterRedditPosts(posts) {
-    // Blocked words.
+    // Apply: blocked words.
     posts = posts.filter(p => UserSettings.blockedWordsRegExps.every(r => !r.test(p.title)));
 
-    // Minimum vote count.
+    // Apply: minimum vote count.
     posts = posts.filter(p => UserSettings.minimumVotes <= p.ups);
 
-    // Number of posts cap (apply last).
+    // Randomize the remaining posts.
+    posts = shuffle(posts);
+
+    // Apply: allowed number of posts.
     posts = posts.splice(0, UserSettings.numberOfPosts);
 
     return posts;
+}
+
+function shuffle(ary) {
+    let randomIndex;
+    let currentIndex = ary.length;
+
+    // While there remain elements to shuffle.
+    while (currentIndex != 0) {
+        // Pick a remaining element.
+        randomIndex = getRandomInt(currentIndex);
+        currentIndex--;
+
+        // And swap it with the current element.
+        [ary[currentIndex], ary[randomIndex]] = [
+            ary[randomIndex], ary[currentIndex]];
+    }
+
+    return ary;
+}
+
+function getRandomInt(max) {
+    return Math.floor(Math.random() * max);
 }
 
 // tryGetRedditPosts: returns an object like: { posts: [], error?: {} }.
@@ -96,8 +142,8 @@ async function tryGetRedditPosts(subreddit) {
         posts: [],
         error: undefined,
     };
+    const url = buildRedditUrl(subreddit);
     try {
-        const url = buildRedditUrl(subreddit);
         logDebug(`tryGetRedditPosts: fetching posts: url=${url}`);
         const response = await fetch(url);
         if (!response.ok) {
@@ -167,42 +213,101 @@ async function extractPostsFromResponse(body) {
 async function tryInsertRoamBlock(content) {
     let didInsertBlock = false;
     try {
-        const uid = getInsertionUID();
-        logDebug(`tryInsertRoamBlock: inserting: parentUid=${uid}, content.length=${content.length}`);
+        const insertionBlock = await getInsertionBlock();
+        let rootBlock;
+        if (!UserSettings.group) {
+            rootBlock = insertionBlock;
+        } else {
+            logDebug(`tryInsertRoamBlock: grouping enabled; first get or create root block`);
+            rootBlock = await getOrCreateRootBlock(insertionBlock);
+        }
+        logDebug(`tryInsertRoamBlock: inserting: insertionBlock=${JSON.stringify(insertionBlock)}, rootBlock=${JSON.stringify(rootBlock)}, group=${UserSettings.group}, content.length=${content.length}`);
         await roamAlphaAPI.createBlock({
-            "location": {
-                "parent-uid": uid,
-                "order": 0,
+            'location': {
+                'parent-uid': rootBlock.uid,
+                'order': 'last',
             },
-            "block": {
-                "string": content,
+            'block': {
+                'string': content,
             }
         });
         didInsertBlock = true;
     } catch (err) {
-        logErr(`tryInsertRoamBlock: failed to insert block: error=err?.message`, err);
+        logErr(`tryInsertRoamBlock: failed to insert block: error=${err?.message}`, err);
     }
     return didInsertBlock;
 }
 
-function getInsertionUID() {
-    let uid;
-    const block = roamAlphaAPI.ui.getFocusedBlock();
-    if (block) {
-        uid = block['block-uid'];
+async function getInsertionBlock() {
+    let uid = await roamAlphaAPI.ui.mainWindow.getOpenPageOrBlockUid();
+    logDebug(`getInsertionBlock: first attempt from open page or block: uid=${uid}`);
+    if (!uid) {
+        uid = roamAlphaAPI.util.dateToPageUid(new Date());
+        logDebug(`getInsertionBlock: second attempt from daily page: uid=${uid}`);
     }
     if (!uid) {
-        uid = getTodayAsRoamFormattedUID();
+        throw new Error(`unable to get insertion block!`);
     }
-    logDebug(`getInsertionUID: uid=${uid}`);
-    return uid;
+    let entityId;
+    ([[entityId, uid]] = roamAlphaAPI.q(`[:find ?e ?uid :in $ ?uid :where [?e :block/uid ?uid]]`, uid));
+    if (!entityId) {
+        throw new Error(`unable to expand insertion uid to entityId: uid=${uid}`);
+    }
+    logDebug(`getInsertionBlock: succeeded: entityId=${entityId}, uid=${uid}`);
+    return {
+        entityId,
+        uid,
+    };
 }
 
-function getTodayAsRoamFormattedUID() {
-    const now = new Date();
-    const str = `${padNum(now.getMonth() + 1)}-${padNum(now.getDate())}-${now.getFullYear()}`; // e.g. 07-31-2022
-    logDebug(`getTodayAsRoamFormattedUID: str=${str}`);
-    return str;
+async function getOrCreateRootBlock(insertionBlock) {
+    const rootString = formatRootBlockString();
+    logDebug(`getOrCreateRootBlock: searching for ${rootString} starting from insertionBlock=${JSON.stringify(insertionBlock)}`);
+
+    let tries = 1;
+    let rootBlockRaw;
+    while (!rootBlockRaw && tries <= 3) {
+        let didCreate = false;
+        rootBlockRaw = roamAlphaAPI.q(`[
+            :find ?e ?uid
+            :in $ ?i ?text %
+            :where
+            [?e :block/string ?text]
+            [?e :block/uid ?uid]
+            (ancestor ?e ?i)
+        ]`, insertionBlock.entityId, rootString, RULE_ANCESTORS)[0];
+        if (rootBlockRaw) {
+            logDebug(`getOrCreateRootBlock: found existing root: rootBlockRaw=${JSON.stringify(rootBlockRaw)}`);
+        } else {
+            await roamAlphaAPI.createBlock({
+                'location': {
+                    'parent-uid': insertionBlock.uid,
+                    'order': 'last',
+                },
+                'block': {
+                    'string': rootString,
+                }
+            });
+            logDebug(`getOrCreateRootBlock: created root`);
+            didCreate = true;
+        }
+        logDebug(`getOrCreateRootBlock: try=${tries}, rootBlockRaw=${JSON.stringify(rootBlockRaw)}, didCreate=${didCreate}`);
+        tries += 1;
+    }
+
+    if (!rootBlockRaw) {
+        throw new Error(`exhausted tries while getting/creating root block`);
+    }
+
+    return {
+        entityId: rootBlockRaw[0],
+        uid: rootBlockRaw[1],
+    };
+}
+
+function formatRootBlockString() {
+    // We gotta have some text as the root block content, else it looks bad.
+    return `${UserSettings.hashtag ?? PLUGIN_FRIENDLY_NAME}`;
 }
 
 function padNum(num) {
@@ -213,7 +318,7 @@ function formatPost(post) {
     let { subreddit, title, selftext, author, url } = post;
     let result;
     const signature = `by ${author} on [r/${subreddit}](${url})`;
-    if (UserSettings.titleOnly) {
+    if (UserSettings.titleOnly || !selftext.length) {
         result = `${title}\n\n__- ${signature}__`;
     } else {
         result = `${title}\n\n__${selftext}\n\n- ${signature}__`;
@@ -305,6 +410,14 @@ const panelConfig = {
             onChange: wrappedOnChangeHandler(SETTING_HASHTAG_KEY),
         }
     }, {
+        id: SETTING_GROUP_KEY,
+        name: 'Group',
+        description: 'Group multiple posts under a single parent block',
+        action: {
+            type: 'switch',
+            onChange: wrappedOnChangeHandler(SETTING_GROUP_KEY),
+        }
+    }, {
         id: SETTING_TITLE_ONLY_KEY,
         name: 'Title only',
         description: 'If true, excludes the body of the post',
@@ -335,17 +448,30 @@ const panelConfig = {
 
 function wrappedOnChangeHandler(key) {
     return (evt) => {
-        debounceUpdateSetting(key, evt.target.value);
+        let val;
+        switch (key) {
+            case SETTING_GROUP_KEY:
+            case SETTING_TITLE_ONLY_KEY:
+                val = evt.target.checked;
+                break;
+            default:
+                val = evt.target.value;
+        }
+        debounceUpdateSetting(key, val);
     };
 }
 
 let timeouts = {};
+let suppressUpdate = false;
 
 // debounceUpdateSetting:
 //  used because I'm getting stale values from extensionAPI.settings even when I delay by a whole second.
 //  so instead I use the value from the event object, but we need to debounce it because the onChange handler
 //  is actually fired on every keypress instead of like an input.onchange.
 function debounceUpdateSetting(key, val) {
+    if (suppressUpdate) { 
+        return;
+    }
     if (timeouts[key]) {
         clearTimeout(timeouts[key]);
     }
@@ -355,94 +481,119 @@ function debounceUpdateSetting(key, val) {
 function doUpdateSetting(rawKey, rawVal) {
     try {
         logDebug(`doUpdateSetting: starting: rawKey=${rawKey}, rawVal=${rawVal}`);
-        let validKey = false;
-        const key = roamSettingKeyToUserSettingKey(rawKey);
-        let val;
-        if (key in UserSettings) {
-            val = cleanSettingValue(rawVal, /*forKey*/ rawKey);
-            UserSettings[key] = val;
+        const appKey = roamSettingKeyToUserSettingKey(rawKey);
+        let appVal, didDefault, validKey;
+        if (appKey in UserSettings) {
+            ({ appVal, didDefault } = rawSettingValueToAppValue(rawVal, /*forKey*/ rawKey));
+            UserSettings[appKey] = appVal;
             validKey = true;
         }
-        if (val && rawKey === SETTING_BLOCKED_WORDS_KEY) {
-            UserSettings.blockedWordsRegExps = generateBlockedWordsRegExps(val);
+        if (appVal && rawKey === SETTING_BLOCKED_WORDS_KEY) {
+            UserSettings.blockedWordsRegExps = generateBlockedWordsRegExps(appVal);
         }
-        if (val && rawKey === SETTING_SUBREDDITS_KEY) {
+        if (appVal && rawKey === SETTING_SUBREDDITS_KEY) {
             reinstallCommands();
         }
-        if (timeouts[key]) {
-            clearTimeout(timeouts[key]);
-            timeouts[key] = undefined;
+        if (didDefault) {
+            suppressUpdate = true;
+            const newVal = renderAppValueToSettingValue(appVal);
+            extensionAPI.settings.set(rawKey, newVal);
+            logDebug(`doUpdateSetting: overwrote to default: rawKey=${rawKey}, rawVal=${rawVal}, appVal=${appVal}, newVal=${newVal}`);
+            suppressUpdate = false;
         }
-        logDebug(`doUpdateSetting: finished: key=${key}, val=${val}, validKey=${validKey}`, UserSettings);
+        if (timeouts[appKey]) {
+            clearTimeout(timeouts[appKey]);
+            timeouts[appKey] = undefined;
+        }
+        logDebug(`doUpdateSetting: finished: rawKey=${rawKey}, rawVal=${rawVal}, appKey=${appKey}, appVal=${appVal}, didDefault=${didDefault}, validKey=${validKey}`, UserSettings);
     } catch (err) {
         logErr(`doUpdateSetting: caught error: err=${err.message}`, err);
     }
 }
 
-function cleanSettingValue(rawVal, forKey) {
-    let cleanVal = rawVal;
+function rawSettingValueToAppValue(rawVal, forKey) {
+    let appVal = rawVal;
     let didDefault = false;
-    logDebug(`cleanSettingValue: starting: rawVal='${rawVal}', forKey=${forKey}`);
+    logDebug(`rawSettingValueToAppValue: starting: rawVal=${rawVal}, forKey=${forKey}`);
     switch (forKey) {
         case SETTING_SUBREDDITS_KEY:
-            ({cleanVal, didDefault} = cleanStringArray(rawVal, DEFAULT_SUBREDDITS));
-            if (!cleanVal.length) {
-                cleanVal = DEFAULT_SUBREDDITS;
+            ({ appVal, didDefault } = parseStringArray(rawVal, DEFAULT_SUBREDDITS));
+            if (!appVal.length) {
+                appVal = DEFAULT_SUBREDDITS;
+                didDefault = true;
             }
-            break;
-        case SETTING_HASHTAG_KEY:
-            ({cleanVal, didDefault} = cleanString(rawVal, DEFAULT_HASHTAG));
-            // E.g. 'roam-reddit' or '#roam-reddit' or '##roam-reddit' -> '#roam-reddit'
-            //  but '' -> ''
-            while (cleanVal.length > 0 && cleanVal.charAt(0) === '#') {
-                cleanVal = cleanVal.slice(1);
-            }
-            if (cleanVal.length > 0) {
-                cleanVal = `#${cleanVal}`;
-            } else {
-                cleanVal = null;
-            }
-            break;
-        case SETTING_NUMBER_OF_POSTS_KEY:
-            ({cleanVal, didDefault} = cleanNumber(rawVal, DEFAULT_NUMBER_OF_POSTS));
             break;
         case SETTING_SORT_KEY:
-            ({cleanVal, didDefault} = cleanString(rawVal, DEFAULT_SORT));
-            cleanVal = cleanVal.toLowerCase();
-            if (!cleanVal.length) {
-                cleanVal = DEFAULT_SORT;
+            ({ appVal, didDefault } = parseString(rawVal, DEFAULT_SORT));
+            if (!appVal.length) {
+                appVal = DEFAULT_SORT;
+                didDefault = true;
+            }
+            appVal = appVal.toLowerCase();
+            break;
+        case SETTING_NUMBER_OF_POSTS_KEY:
+            ({ appVal, didDefault } = parseNumber(rawVal, DEFAULT_NUMBER_OF_POSTS));
+            break;
+        case SETTING_HASHTAG_KEY:
+            ({ appVal, didDefault } = parseString(rawVal, DEFAULT_HASHTAG));
+            // E.g. 'roam-reddit' or '#roam-reddit' or '##roam-reddit' -> '#roam-reddit'
+            //  but '' -> ''
+            while (appVal.length > 0 && appVal.charAt(0) === '#') {
+                appVal = appVal.slice(1);
+            }
+            if (appVal.length > 0) {
+                appVal = `#${appVal}`;
+            } else {
+                appVal = null;
             }
             break;
-        case SETTING_BLOCKED_WORDS_KEY:
-            ({cleanVal, didDefault}= cleanStringArray(rawVal, DEFAULT_BLOCKED_WORDS));
-            break;
-        case SETTING_MINIMUM_VOTES_KEY:
-            ({cleanVal, didDefault} = cleanNumber(rawVal, DEFAULT_MINIMUM_VOTES));
+        case SETTING_GROUP_KEY:
+            ({ appVal, didDefault } = parseBoolean(rawVal, DEFAULT_GROUP));
             break;
         case SETTING_TITLE_ONLY_KEY:
-            ({cleanVal, didDefault} = cleanBoolean(rawVal, DEFAULT_TITLE_ONLY));
+            ({ appVal, didDefault } = parseBoolean(rawVal, DEFAULT_TITLE_ONLY));
+            break;
+        case SETTING_BLOCKED_WORDS_KEY:
+            ({ appVal, didDefault } = parseStringArray(rawVal, DEFAULT_BLOCKED_WORDS));
+            break;
+        case SETTING_MINIMUM_VOTES_KEY:
+            ({ appVal, didDefault } = parseNumber(rawVal, DEFAULT_MINIMUM_VOTES));
             break;
         default:
-            throw new Error(`unrecognized setting: key=${forKey}, rawVal='${rawVal}'`);
+            throw new Error(`unrecognized setting: key=${forKey}, rawVal=${rawVal}`);
     }
-    logDebug(`cleanSettingVal: returning '${rawVal}' -> '${JSON.stringify(cleanVal)}': didDefault=${didDefault}`);
-    return cleanVal;
+    logDebug(`rawSettingValueToAppValue: returning ${rawVal} -> ${JSON.stringify(appVal)}: didDefault=${didDefault}`);
+    return {
+        appVal,
+        didDefault,
+    };
 }
 
-function cleanString(val, default_) {
-    return defaultIfThrows(() => String(val).trim(), default_);
-}
-
-function cleanStringArray(val, default_) {
+function parseString(val, default_) {
     return defaultIfThrows(() => {
+        if (typeof val === 'undefined' || val === null) {
+            throw new Error(`missing or null value`);
+        }
+        return String(val).trim();
+    }, default_);
+}
+
+function parseStringArray(val, default_) {
+    return defaultIfThrows(() => {
+        if (typeof val === 'undefined' || val === null) {
+            throw new Error(`missing or null value`);
+        }
         let ret = String(val);
-        ret = ret.split(',').filter(w => !!w).map(w => cleanString(w).cleanVal);
+        ret = ret.split(',').filter(w => !!w).map(w => parseString(w).appVal);
         return ret;
     }, default_);
 }
 
-function cleanNumber(val, default_) {
+function parseNumber(val, default_) {
     return defaultIfThrows(() => {
+        if (typeof val === 'undefined' || val === null) {
+            throw new Error(`missing or null value`);
+        }
         const ret = Number(val);
         if (Number.isNaN(ret)) {
             throw new Error(`invalid number value: ${val}`);
@@ -454,9 +605,12 @@ function cleanNumber(val, default_) {
     }, default_)
 }
 
-function cleanBoolean(val, default_) {
+function parseBoolean(val, default_) {
     return defaultIfThrows(() => {
-        let { cleanVal: valAsStr } = cleanString(val, default_);
+        if (typeof val === 'undefined' || val === null) {
+            throw new Error(`missing or null value`);
+        }
+        let { appVal: valAsStr } = parseString(val, default_);
         valAsStr = valAsStr.toLowerCase();
         if (valAsStr === 'on') {
             return true;
@@ -470,37 +624,55 @@ function cleanBoolean(val, default_) {
 
 function defaultIfThrows(func, default_) {
     try {
-        const cleanVal = func();
+        const appVal = func();
         return {
-            cleanVal,
+            appVal,
             didDefault: false,
         };
     } catch (err) {
-        logDebug(`defaultIfThrows: caught error: err=${err.message}`, err);
+        logDebug(`defaultIfThrows: caught error parsing value, defaulting: err=${err.message}`);
         return {
-            cleanVal: default_,
+            appVal: default_,
             didDefault: true,
         };
     }
 }
 
+function renderAppValueToSettingValue(appVal, forKey) {
+    switch (forKey) {
+        case SETTING_SUBREDDITS_KEY:
+        case SETTING_BLOCKED_WORDS_KEY:
+            return renderArrayToString(appVal);
+        default:
+            // String, Boolean, etc. fine to pass thru.
+            return appVal;
+    }
+}
+
+function renderArrayToString(ary) {
+    return ary.join(',');
+}
+
 function populateAllSettings(source) {
-    const blob = extensionAPI.settings.getAll();
-    logDebug(`initializeSettings: starting: blobKeys.length=${Object.keys(blob).length}`, blob);
+    const blob = extensionAPI.settings.getAll() ?? {};
+    const blobKeys = Object.keys(blob);
+    logDebug(`populateAllSettings: starting: blobKeys.length=${blobKeys.length}`, blob);
     const allEntries = [
+        // the 'undefined' value for each key will cause the default to be read.
+        ...ALL_SETTING_KEYS.filter(k => !blobKeys.includes(k)).map((k, i) => [k, undefined]),
         ...Object.entries(blob),
     ];
     for (const [rawKey, rawVal] of allEntries) {
         doUpdateSetting(rawKey, rawVal);
     }
-    logDebug(`initializeSettings: finished: triggeredBy=${source}`, UserSettings);
+    logDebug(`populateAllSettings: finished: triggeredBy=${source}`, UserSettings);
 }
 
 const RUN_SINGLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve posts from`;
 const RUN_MULTIPLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve`;
 
 function formatCommandLabel(subreddit) {
-    return `${RUN_SINGLE_COMMAND_PREFIX} '${subreddit}'...`;
+    return `${RUN_SINGLE_COMMAND_PREFIX} ${subreddit}...`;
 }
 
 let lastInstalledSubreddits = [];

@@ -30,6 +30,7 @@ The following settings are supported:
 * **Sort**: Select the sorting order, which should be one of the supported sorting options on Reddit itself (e.g. Top, Rising, New, Random, etc.). _(Optional, defaults to Rising.)_
 * **Number of posts**: The number of posts to retrieve for each subreddit. _(Optional, defaults to 1.)_
 * **Hashtag**: If you'd like each post to be tagged using a custom keyword, so that you can locate all the Reddit content in your graph for instance. A value like "#roam-reddit" works well. _(Optional.)_
+* **Group**: Toggle this option to nest all inserted posts under a root node. The content of the root node will be the **hashtag** if it is present.
 * **Title only**: Toggle this option to only pull the title of the post (rather than the title+body).
 * **Blocked words**: A comma-separated list of filter words. _(Optional.)_
 * **Minimum upvotes**: The minimum votes a post must have received. _(Optional, defaults to zero.)_
