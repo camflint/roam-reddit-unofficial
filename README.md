@@ -1,4 +1,4 @@
-# roam-reddit
+# roam-reddit-unofficial
 
 Free unofficial Reddit plug-in for Roam Research. It's intended to pull one post at a time from a subreddit of your chosing into your daily notes page: like from r/LifeProTips, r/todayilearned, etc.
 
@@ -10,7 +10,7 @@ The easiest way to access the plugin's features is via the Command Palette. Firs
 
 ## Installation
 
-There are two ways of installing roam-reddit into your Roam graph. Unless you're a developer, the best option is to install it through the official Roam Depot.
+There are two ways of installing roam-reddit-unofficial into your Roam graph. Unless you're a developer, the best option is to install it through the official Roam Depot.
 
 ## Developer mode
 To install the plug-in manually:
