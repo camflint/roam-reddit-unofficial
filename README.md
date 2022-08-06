@@ -39,9 +39,14 @@ The following settings are supported:
 
 I developed this plug-in in my free time because (a) I wanted to learn and (b) it's useful to my everday workflow. I can't promise any support, but if you encounter any issues, feel free to open an issue on GitHub anyway, and if I have time I'll respond.
 
+If you do submit an issue, please include the logs (see "technical troubleshooting" for instructions below).
+
 ## Roadmap
 In the future, I'd love to add the ability to draft and submit Reddit posts directly from Roam.
 
 ## Technical troubleshooting
 
 The code is thoroughly instrumented with debug logs, but they won't be immediately visible in the Developer Tools -> Console window. To reveal them, first open the developer tools in your Chromium-based browser, then make sure the "Verbose" level is checked on the right hand side of the Console tab.
+
+![CleanShot 2022-08-06 at 12 10 40@2x](https://user-images.githubusercontent.com/2079548/183263001-6378a5ae-11a3-49cc-8173-336c38f0d407.png)
+
