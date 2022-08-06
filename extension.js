@@ -1,6 +1,6 @@
-const PLUGIN_FRIENDLY_NAME = 'Roam Reddit';
+const PLUGIN_FRIENDLY_NAME = 'Reddit Unofficial';
 
-const LOG_PREFIX = '[roam-reddit]';
+const LOG_PREFIX = '[reddit-unofficial]';
 
 // Setting keys.
 const SETTING_SUBREDDITS_KEY = 'subreddits';
@@ -26,7 +26,7 @@ const ALL_SETTING_KEYS = [
 const DEFAULT_SUBREDDITS = ['LifeProTips', 'todayilearned'];
 const DEFAULT_SORT = 'Rising'; // ,new,rising,top,random, ...
 const DEFAULT_NUMBER_OF_POSTS = 1;
-const DEFAULT_HASHTAG = '#roam-reddit';
+const DEFAULT_HASHTAG = '#reddit-unofficial';
 const DEFAULT_GROUP = true;
 const DEFAULT_TITLE_ONLY = false;
 const DEFAULT_BLOCKED_WORDS = []; // ['LPT request']
@@ -536,7 +536,7 @@ function rawSettingValueToAppValue(rawVal, forKey) {
             break;
         case SETTING_HASHTAG_KEY:
             ({ appVal, didDefault } = parseString(rawVal, DEFAULT_HASHTAG));
-            // E.g. 'roam-reddit' or '#roam-reddit' or '##roam-reddit' -> '#roam-reddit'
+            // E.g. 'reddit-unofficial' or '#reddit-unofficial' or '##reddit-unofficial' -> '#reddit-unofficial'
             //  but '' -> ''
             while (appVal.length > 0 && appVal.charAt(0) === '#') {
                 appVal = appVal.slice(1);

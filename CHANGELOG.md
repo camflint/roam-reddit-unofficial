@@ -2,6 +2,8 @@
 ## [0.1.2] - 2022-08-06
 ### Added
 - Support nesting all posts under a single node (with new setting).
+### Changed
+- Renamed all "Roam Reddit" strings to "Reddit Unofficial"
 ### Fixed
 - Switch setting values correctly populate now.
 - Default values are propagated back to UI on first use now.
