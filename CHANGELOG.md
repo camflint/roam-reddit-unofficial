@@ -2,6 +2,7 @@
 ## [0.1.2] - 2022-08-06
 ### Added
 - Support nesting all posts under a single node (with new setting).
+- Support for automatic run-once.
 ### Changed
 - Renamed all "Roam Reddit" strings to "Reddit Unofficial"
 ### Fixed
@@ -9,6 +10,7 @@
 - Default values are propagated back to UI on first use now.
 - Posts with empty bodies are formatted correctly.
 - The insertion node uses the `roamAlphaAPI` helpers now to select the active page or block, with fallback to today's daily notes page.
+- Timing issues due to not awaiting implicitly returned promises.
 
 ## [0.1.1] - 2022-08-01
 ### Added

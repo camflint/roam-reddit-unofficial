@@ -214,14 +214,7 @@ async function tryInsertRoamBlock(content) {
     let didInsertBlock = false;
     try {
         const insertionBlock = await getInsertionBlock();
-        let rootBlock;
-        if (!UserSettings.group) {
-            rootBlock = insertionBlock;
-        } else {
-            logDebug(`tryInsertRoamBlock: grouping enabled; first get or create root block`);
-            rootBlock = await getOrCreateRootBlock(insertionBlock);
-        }
-        logDebug(`tryInsertRoamBlock: inserting: insertionBlock=${JSON.stringify(insertionBlock)}, rootBlock=${JSON.stringify(rootBlock)}, group=${UserSettings.group}, content.length=${content.length}`);
+        logDebug(`tryInsertRoamBlock: inserting: insertionBlock=${JSON.stringify(insertionBlock)}, content.length=${content.length}`);
         await roamAlphaAPI.createBlock({
             'location': {
                 'parent-uid': rootBlock.uid,
@@ -238,22 +231,49 @@ async function tryInsertRoamBlock(content) {
     return didInsertBlock;
 }
 
+async function tryGetInsertionBlock() {
+    try {
+        return getInsertionBlock();
+    } catch (err) {
+        logErr(`tryGetInsertionBlock: failed to get insertion block: err=${err?.message}`, err);
+        return null;
+    }
+}
+
 async function getInsertionBlock() {
+    const searchBlock = await getSearchBlock();
+    let insertionBlock;
+    let didCreate = false;
+    if (!UserSettings.group) {
+        insertionBlock = searchBlock;
+    } else {
+        logDebug(`getInsertionBlock: grouping is enabled; so get or create root block under search block`);
+        insertionBlock = await getOrCreateRootBlock(searchBlock);
+        ({ didCreate } = insertionBlock);
+    }
+    logDebug(`getInsertionBlock: returning: searchBlock=${JSON.stringify(searchBlock)}, insertionBlock=${insertionBlock}, didCreate=${didCreate}, group=${UserSettings.group}`);
+    return {
+        ...insertionBlock,
+        didCreate,
+    };
+}
+
+async function getSearchBlock() {
     let uid = await roamAlphaAPI.ui.mainWindow.getOpenPageOrBlockUid();
-    logDebug(`getInsertionBlock: first attempt from open page or block: uid=${uid}`);
+    logDebug(`getSearchBlock: first attempt from open page or block: uid=${uid}`);
     if (!uid) {
         uid = roamAlphaAPI.util.dateToPageUid(new Date());
-        logDebug(`getInsertionBlock: second attempt from daily page: uid=${uid}`);
+        logDebug(`getSearchBlock: second attempt from daily page: uid=${uid}`);
     }
     if (!uid) {
-        throw new Error(`unable to get insertion block!`);
+        throw new Error(`unable to get search block!`);
     }
     let entityId;
     ([[entityId, uid]] = roamAlphaAPI.q(`[:find ?e ?uid :in $ ?uid :where [?e :block/uid ?uid]]`, uid));
     if (!entityId) {
-        throw new Error(`unable to expand insertion uid to entityId: uid=${uid}`);
+        throw new Error(`unable to expand search block uid to its entityId: uid=${uid}`);
     }
-    logDebug(`getInsertionBlock: succeeded: entityId=${entityId}, uid=${uid}`);
+    logDebug(`getSearchBlock: succeeded: entityId=${entityId}, uid=${uid}`);
     return {
         entityId,
         uid,
@@ -266,8 +286,8 @@ async function getOrCreateRootBlock(insertionBlock) {
 
     let tries = 1;
     let rootBlockRaw;
+    let didCreate = false;
     while (!rootBlockRaw && tries <= 3) {
-        let didCreate = false;
         rootBlockRaw = roamAlphaAPI.q(`[
             :find ?e ?uid
             :in $ ?i ?text %
@@ -302,6 +322,7 @@ async function getOrCreateRootBlock(insertionBlock) {
     return {
         entityId: rootBlockRaw[0],
         uid: rootBlockRaw[1],
+        didCreate,
     };
 }
 
@@ -342,8 +363,8 @@ function formatNotice(text, prefix = 'NOTE') {
     return result;
 }
 
-async function runForSingleSubreddit(subreddit, caller = 'none') {
-    logDebug(`runForSingleSubreddit: starting: subreddit=${subreddit}, caller=${caller}`);
+async function tryRunSingle(subreddit, caller = 'none') {
+    logDebug(`tryRunSingle: starting: subreddit=${subreddit}, caller=${caller}`);
     const { posts, error } = await tryGetFilteredRedditPosts(subreddit);
     let contents = [];
     if (error) {
@@ -359,17 +380,29 @@ async function runForSingleSubreddit(subreddit, caller = 'none') {
             insertedBlocks += 1;
         }
     }
-    logDebug(`runForSingleSubreddit: completed, insertedBlocks=${insertedBlocks}`);
+    logDebug(`tryRunSingle: finished, insertedBlocks=${insertedBlocks}`);
     return insertedBlocks > 0;
 }
 
-async function runForAllSubreddits(caller = 'none') {
-    logDebug(`runForAllSubreddits: starting: caller=${caller}`);
+async function tryRunAll(caller = 'none') {
+    logDebug(`tryRunAll: starting: caller=${caller}`);
     const promises = UserSettings.subreddits.map(
-        subreddit => runForSingleSubreddit(subreddit, caller),
+        subreddit => tryRunSingle(subreddit, caller),
     );
     const insertions = await Promise.all(promises);
-    logDebug(`runForAllSubreddits: completed: succeeded=${insertions.filter(i => !!i).length}`);
+    logDebug(`tryRunAll: finished: succeeded=${insertions.filter(i => !!i).length}`);
+}
+
+async function tryRunAuto(caller = 'none') {
+    logDebug(`tryRunAuto: starting: caller=${caller}`);
+    let didRun = false;
+    const insertionBlock = await tryGetInsertionBlock();
+    if (insertionBlock?.didCreate) {
+        didRun = true;
+        // Only actually run if we created the insertion block.
+        await tryRunAll(caller);
+    }
+    logDebug(`tryRunAuto: finished: didRun=${didRun}`);
 }
 
 const panelConfig = {
@@ -475,10 +508,20 @@ function debounceUpdateSetting(key, val) {
     if (timeouts[key]) {
         clearTimeout(timeouts[key]);
     }
-    timeouts[key] = setTimeout(() => doUpdateSetting(key, val), 500);
+    timeouts[key] = setTimeout(() => {
+        wrapPromise(() => {
+            return doUpdateSetting(key, val);
+        }).catch(err => {
+            logErr(`debounceUpdateSetting: caught unhandled error in promise: err=${err?.message}`, err);
+        });
+    }, 500);
 }
 
-function doUpdateSetting(rawKey, rawVal) {
+async function doUpdateSetting({
+    rawKey,
+    rawVal,
+    suppressCommandRefresh = false,
+}) {
     try {
         logDebug(`doUpdateSetting: starting: rawKey=${rawKey}, rawVal=${rawVal}`);
         const appKey = roamSettingKeyToUserSettingKey(rawKey);
@@ -492,7 +535,11 @@ function doUpdateSetting(rawKey, rawVal) {
             UserSettings.blockedWordsRegExps = generateBlockedWordsRegExps(appVal);
         }
         if (appVal && rawKey === SETTING_SUBREDDITS_KEY) {
-            reinstallCommands();
+            if (!suppressCommandRefresh) {
+                await reinstallCommands('settings-update');
+            } else {
+                logDebug(`doUpdateSetting: command refresh suppressed, skipped`);
+            }
         }
         if (didDefault) {
             suppressUpdate = true;
@@ -653,19 +700,28 @@ function renderArrayToString(ary) {
     return ary.join(',');
 }
 
-function populateAllSettings(source) {
+async function initializeControlPanel(caller) {
+    logDebug(`populateAllSettings: starting: caller=${caller}`);
+    extensionAPI.settings.panel.create(panelConfig);
+    logDebug(`populateAllSettings: created panel`);
     const blob = extensionAPI.settings.getAll() ?? {};
     const blobKeys = Object.keys(blob);
-    logDebug(`populateAllSettings: starting: blobKeys.length=${blobKeys.length}`, blob);
+    logDebug(`populateAllSettings: read ${blobKeys.length} existing settings`, blob);
     const allEntries = [
         // the 'undefined' value for each key will cause the default to be read.
         ...ALL_SETTING_KEYS.filter(k => !blobKeys.includes(k)).map((k, i) => [k, undefined]),
         ...Object.entries(blob),
     ];
+    logDebug(`populateAllSettings: updating ${allEntries.length} settings`, allEntries);
     for (const [rawKey, rawVal] of allEntries) {
-        doUpdateSetting(rawKey, rawVal);
+        await doUpdateSetting({
+            rawKey,
+            rawVal,
+            // Already in startup path; we'll do this at the end.
+            suppressCommandRefresh: true,
+        });
     }
-    logDebug(`populateAllSettings: finished: triggeredBy=${source}`, UserSettings);
+    logDebug(`populateAllSettings: finished`, UserSettings);
 }
 
 const RUN_SINGLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve posts from`;
@@ -677,60 +733,86 @@ function formatCommandLabel(subreddit) {
 
 let lastInstalledSubreddits = [];
 
-function installCommands() {
+async function installCommands(caller) {
+    logDebug(`installCommands: starting: caller=${caller}`);
     if (lastInstalledSubreddits.length) {
-        logWarn(`installCommand: previous commands not uninstalled first!`);
+        logWarn(`installCommands: previous commands not uninstalled first!`);
         lastInstalledSubreddits = [];
     }
     for (const subreddit of UserSettings.subreddits) {
-        roamAlphaAPI.ui.commandPalette.addCommand({
+        await roamAlphaAPI.ui.commandPalette.addCommand({
             label: formatCommandLabel(subreddit),
-            callback: () => { return runForSingleSubreddit(subreddit, 'command-palette'); },
+            callback: () => { return tryRunSingle(subreddit, 'command-palette'); },
         });
         lastInstalledSubreddits.push(subreddit);
         logDebug(`installCommands: installed subreddit=${subreddit}`);
     }
-    roamAlphaAPI.ui.commandPalette.addCommand({
+    await roamAlphaAPI.ui.commandPalette.addCommand({
         label: `${RUN_MULTIPLE_COMMAND_PREFIX} all subreddits`,
-        callback: () => { return runForAllSubreddits('command-palette'); },
+        callback: () => { return tryRunAll('command-palette'); },
     });
     logDebug(`installCommands: installed 'retrieve all'`);
+    logDebug(`installCommands: finished`);
 }
 
-function uninstallCommands() {
-    roamAlphaAPI.ui.commandPalette.removeCommand({
+async function uninstallCommands(caller) {
+    logDebug(`uninstallCommands: starting: caller=${caller}`);
+    await roamAlphaAPI.ui.commandPalette.removeCommand({
         label: `${RUN_MULTIPLE_COMMAND_PREFIX} all subreddits`,
     });
     logDebug(`uninstallCommands: uninstalled 'retrieve all'`);
     for (const subreddit of lastInstalledSubreddits) {
-        roamAlphaAPI.ui.commandPalette.removeCommand({
+        await roamAlphaAPI.ui.commandPalette.removeCommand({
             label: formatCommandLabel(subreddit),
         });
         logDebug(`uninstallCommands: uninstalled ${subreddit}`);
     }
+    logDebug(`uninstallCommands: finished`);
     lastInstalledSubreddits = [];
 }
 
-function reinstallCommands() {
-    uninstallCommands();
-    installCommands();
+async function reinstallCommands(caller = 'none') {
+    await uninstallCommands(caller);
+    await installCommands(caller);
+}
+
+function wrapPromise(func) {
+    return new Promise((resolve, reject) => {
+        try {
+            const result = func();
+            resolve(result);
+        } catch (err) {
+            reject(err);
+        }
+    });
 }
 
 function onload({ extensionAPI: _extensionAPI }) {
     extensionAPI = _extensionAPI;
-    extensionAPI.settings.panel.create(panelConfig);
-    window.extensionAPI = extensionAPI; // TEMP
-    populateAllSettings('onload');
-    installCommands();
-    logDebug('extension loaded');
+    return wrapPromise(() => {
+        logDebug(`onload: starting`);
+        return initializeControlPanel('onload');
+    }).then(() => {
+        return installCommands('onload');
+    }).then(() => {
+        logInfo('extension loaded!');
+    }).catch(err => {
+        logErr(`onload threw an exception: err=${err?.message}`, err);
+    });
 }
 
 function onunload() {
-    uninstallCommands();
-    logDebug('extension unloaded');
+    return wrapPromise(() => {
+        logDebug(`onunload: starting`);
+        return uninstallCommands('onunload');
+    }).then(() => {
+        logInfo('extension unloaded!');
+    }).catch(err => {
+        logErr(`onunload threw an exception: err=${err?.message}`, err);
+    });
 }
 
 export default {
-    onload: onload,
-    onunload: onunload,
+    onload,
+    onunload,
 };
