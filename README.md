@@ -8,7 +8,9 @@ Useful for subreddits like from `r/lifeprotips`, `r/todayilearned`, or your own 
 
 The easiest way to access the plugin's features is via the Command Palette. First put your cursor where you want the blocks to be inserted. Then just press `Cmd+P` (`Ctrl+P` on Windows) and start typing "Reddit" to see a list of supported commands.
 
-![image](https://user-images.githubusercontent.com/2079548/182274952-965f5721-8c7f-4939-8a4c-59d5be3f08cf.png)
+<img width="785" alt="CleanShot 2022-08-06 at 18 00 29@2x" src="https://user-images.githubusercontent.com/2079548/183270762-1b207a99-35f9-4bf9-925e-4088c0d69c9e.png">
+
+![image](https://user-images.githubusercontent.com/2079548/183270778-50f992f2-3673-42c7-9bb6-3ce8adb314e3.png)
 
 ## Installation
 
@@ -24,8 +26,6 @@ To install the plug-in manually, follow these steps:
 1. Navigate to the folder containing this repo's source code.
 1. Notice that a new settings section for the plugin appears on the left sidebar.
 
-![CleanShot 2022-07-31 at 23 57 02@2x](https://user-images.githubusercontent.com/2079548/182091080-679f8b78-4698-40bd-ada5-f4b03986a4ad.png)
-
 ## Configuration
 
 The following settings are supported:
@@ -38,6 +38,8 @@ The following settings are supported:
 * **Title only**: Toggle this option to only pull in the title of the post (rather than the title and body together. _(Optional, defaults to false.)_
 * **Blocked words**: A comma-separated list of filter words. _(Optional, defaults to none.)_
 * **Minimum upvotes**: The minimum votes a post must have received to be included in the filter. _(Optional, defaults to zero.)_
+
+![image](https://user-images.githubusercontent.com/2079548/183270770-773a0d8d-3ff3-4e65-8b93-2527ae02383b.png)
 
 ## Support
 
