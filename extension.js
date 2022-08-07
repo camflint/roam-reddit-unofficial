@@ -3,6 +3,7 @@ const PLUGIN_FRIENDLY_NAME = 'Reddit Unofficial';
 const LOG_PREFIX = '[reddit-unofficial]';
 
 // Setting keys.
+const SETTING_AUTO = 'auto';
 const SETTING_SUBREDDITS_KEY = 'subreddits';
 const SETTING_SORT_KEY = 'sort';
 const SETTING_NUMBER_OF_POSTS_KEY = 'number-of-posts';
@@ -12,6 +13,7 @@ const SETTING_TITLE_ONLY_KEY = 'title-only';
 const SETTING_BLOCKED_WORDS_KEY = 'blocked-words';
 const SETTING_MINIMUM_VOTES_KEY = 'minimum-votes';
 const ALL_SETTING_KEYS = [
+    SETTING_AUTO,
     SETTING_SUBREDDITS_KEY,
     SETTING_SORT_KEY,
     SETTING_NUMBER_OF_POSTS_KEY,
@@ -23,8 +25,9 @@ const ALL_SETTING_KEYS = [
 ];
 
 // Setting defaults.
-const DEFAULT_SUBREDDITS = ['LifeProTips', 'todayilearned'];
-const DEFAULT_SORT = 'Rising'; // ,new,rising,top,random, ...
+const DEFAULT_AUTO = true;
+const DEFAULT_SUBREDDITS = ['lifeprotips'];
+const DEFAULT_SORT = 'top'; // ,new,rising,top,random, ...
 const DEFAULT_NUMBER_OF_POSTS = 1;
 const DEFAULT_HASHTAG = '#reddit-unofficial';
 const DEFAULT_GROUP = true;
@@ -32,8 +35,9 @@ const DEFAULT_TITLE_ONLY = false;
 const DEFAULT_BLOCKED_WORDS = []; // ['LPT request']
 const DEFAULT_MINIMUM_VOTES = 0; // 1000
 
-// Setting active values.
+// Settings as application values.
 let UserSettings = {
+    auto: DEFAULT_AUTO,
     subreddits: DEFAULT_SUBREDDITS,
     sort: DEFAULT_SORT,
     numberOfPosts: DEFAULT_NUMBER_OF_POSTS,
@@ -217,7 +221,7 @@ async function tryInsertRoamBlock(content) {
         logDebug(`tryInsertRoamBlock: inserting: insertionBlock=${JSON.stringify(insertionBlock)}, content.length=${content.length}`);
         await roamAlphaAPI.createBlock({
             'location': {
-                'parent-uid': rootBlock.uid,
+                'parent-uid': insertionBlock.uid,
                 'order': 'last',
             },
             'block': {
@@ -231,17 +235,18 @@ async function tryInsertRoamBlock(content) {
     return didInsertBlock;
 }
 
-async function tryGetInsertionBlock() {
+async function tryGetInsertionBlock(args) {
     try {
-        return getInsertionBlock();
+        return getInsertionBlock(args);
     } catch (err) {
         logErr(`tryGetInsertionBlock: failed to get insertion block: err=${err?.message}`, err);
         return null;
     }
 }
 
-async function getInsertionBlock() {
-    const searchBlock = await getSearchBlock();
+async function getInsertionBlock(args) {
+    args = args ?? { searchBlock: undefined, todayOnly: false };
+    const searchBlock = !args.searchBlock ? await getSearchBlock(args) : args.searchBlock;
     let insertionBlock;
     let didCreate = false;
     if (!UserSettings.group) {
@@ -258,22 +263,45 @@ async function getInsertionBlock() {
     };
 }
 
-async function getSearchBlock() {
-    let uid = await roamAlphaAPI.ui.mainWindow.getOpenPageOrBlockUid();
-    logDebug(`getSearchBlock: first attempt from open page or block: uid=${uid}`);
-    if (!uid) {
-        uid = roamAlphaAPI.util.dateToPageUid(new Date());
-        logDebug(`getSearchBlock: second attempt from daily page: uid=${uid}`);
+async function tryGetSearchBlock(args) {
+    try {
+        return getSearchBlock(args);
+    } catch (err) {
+        logErr(`tryGetSearchBlock: failed to get search block: err=${err?.message}`, err);
+        return null;
+    }
+}
+
+async function getSearchBlock(args) {
+    args = args ?? { todayOnly: false };
+    logDebug(`getSearchBlock: starting: todayOnly=${args.todayOnly}`);
+    let uid;
+    if (!args.todayOnly) {
+        logDebug(`getSearchBlock: attempt from open page or block: uid=${uid}`);
+        uid = await roamAlphaAPI.ui.mainWindow.getOpenPageOrBlockUid();
     }
     if (!uid) {
-        throw new Error(`unable to get search block!`);
+        uid = getTodayPageUid();
+        logDebug(`getSearchBlock: attempt from today's daily page: uid=${uid}`);
     }
+    if (!uid) {
+        throw new Error(`unable to get a search block!`);
+    }
+    const block = expandUidToBlock(uid);
+    logDebug(`getSearchBlock: succeeded: searchBlock=${JSON.stringify(block)}`);
+    return block;
+}
+
+function getTodayPageUid() {
+    return roamAlphaAPI.util.dateToPageUid(new Date());
+}
+
+function expandUidToBlock(uid) {
     let entityId;
     ([[entityId, uid]] = roamAlphaAPI.q(`[:find ?e ?uid :in $ ?uid :where [?e :block/uid ?uid]]`, uid));
     if (!entityId) {
         throw new Error(`unable to expand search block uid to its entityId: uid=${uid}`);
     }
-    logDebug(`getSearchBlock: succeeded: entityId=${entityId}, uid=${uid}`);
     return {
         entityId,
         uid,
@@ -331,10 +359,6 @@ function formatRootBlockString() {
     return `${UserSettings.hashtag ?? PLUGIN_FRIENDLY_NAME}`;
 }
 
-function padNum(num) {
-    return String(num).padStart(2, '0');
-}
-
 function formatPost(post) {
     let { subreddit, title, selftext, author, url } = post;
     let result;
@@ -390,24 +414,47 @@ async function tryRunAll(caller = 'none') {
         subreddit => tryRunSingle(subreddit, caller),
     );
     const insertions = await Promise.all(promises);
-    logDebug(`tryRunAll: finished: succeeded=${insertions.filter(i => !!i).length}`);
+    const succeeded = insertions.filter(i => !!i).length > 0;
+    logDebug(`tryRunAll: finished: succeeded=${succeeded}`);
+    return succeeded;
 }
 
 async function tryRunAuto(caller = 'none') {
     logDebug(`tryRunAuto: starting: caller=${caller}`);
-    let didRun = false;
-    const insertionBlock = await tryGetInsertionBlock();
-    if (insertionBlock?.didCreate) {
-        didRun = true;
-        // Only actually run if we created the insertion block.
-        await tryRunAll(caller);
+    if (!UserSettings.auto) {
+        logDebug(`tryRunAuto: disabled, skipping`);
+        return;
     }
-    logDebug(`tryRunAuto: finished: didRun=${didRun}`);
+    const searchBlock = await tryGetSearchBlock({ todayOnly: true });
+    if (!searchBlock) {
+        logDebug(`tryRunAuto: today's daily page is not active, skipping`);
+        return;
+    }
+    const insertionBlock = await tryGetInsertionBlock({ searchBlock });
+    if (!insertionBlock) {
+        logDebug(`tryRunAuto: failed to get insertion block, skipping`);
+        return;
+    }
+    if (!insertionBlock.didCreate) {
+        logDebug(`tryRunAuto: insertion block already exists, skipping`);
+        return;
+    }
+    // Finally, we can run.
+    const didInsert = await tryRunAll(caller);
+    logDebug(`tryRunAuto: finished: didInsert=${didInsert}`);
 }
 
 const panelConfig = {
     tabTitle: PLUGIN_FRIENDLY_NAME,
     settings: [{
+        id: SETTING_AUTO,
+        name: 'Auto',
+        description: `Automatically run once daily on today's page`,
+        action: {
+            type: 'switch',
+            onChange: wrappedOnChangeHandler(SETTING_AUTO),
+        }
+    }, {
         id: SETTING_SUBREDDITS_KEY,
         name: 'Subreddits',
         description: 'Comma-separated list of subreddits',
@@ -502,7 +549,7 @@ let suppressUpdate = false;
 //  so instead I use the value from the event object, but we need to debounce it because the onChange handler
 //  is actually fired on every keypress instead of like an input.onchange.
 function debounceUpdateSetting(key, val) {
-    if (suppressUpdate) { 
+    if (suppressUpdate) {
         return;
     }
     if (timeouts[key]) {
@@ -510,7 +557,10 @@ function debounceUpdateSetting(key, val) {
     }
     timeouts[key] = setTimeout(() => {
         wrapPromise(() => {
-            return doUpdateSetting(key, val);
+            return doUpdateSetting({
+                rawKey: key,
+                rawVal: val,
+            });
         }).catch(err => {
             logErr(`debounceUpdateSetting: caught unhandled error in promise: err=${err?.message}`, err);
         });
@@ -563,6 +613,9 @@ function rawSettingValueToAppValue(rawVal, forKey) {
     let didDefault = false;
     logDebug(`rawSettingValueToAppValue: starting: rawVal=${rawVal}, forKey=${forKey}`);
     switch (forKey) {
+        case SETTING_AUTO:
+            ({ appVal, didDefault } = parseBoolean(rawVal, DEFAULT_AUTO));
+            break;
         case SETTING_SUBREDDITS_KEY:
             ({ appVal, didDefault } = parseStringArray(rawVal, DEFAULT_SUBREDDITS));
             if (!appVal.length) {
@@ -728,7 +781,7 @@ const RUN_SINGLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve posts from`
 const RUN_MULTIPLE_COMMAND_PREFIX = `${PLUGIN_FRIENDLY_NAME}: Retrieve`;
 
 function formatCommandLabel(subreddit) {
-    return `${RUN_SINGLE_COMMAND_PREFIX} ${subreddit}...`;
+    return `${RUN_SINGLE_COMMAND_PREFIX} ${subreddit}`;
 }
 
 let lastInstalledSubreddits = [];
@@ -795,9 +848,11 @@ function onload({ extensionAPI: _extensionAPI }) {
     }).then(() => {
         return installCommands('onload');
     }).then(() => {
+        return tryRunAuto('onload');
+    }).then(() => {
         logInfo('extension loaded!');
     }).catch(err => {
-        logErr(`onload threw an exception: err=${err?.message}`, err);
+        logErr(`onload threw an error: err=${err?.message}`, err);
     });
 }
 
@@ -808,7 +863,7 @@ function onunload() {
     }).then(() => {
         logInfo('extension unloaded!');
     }).catch(err => {
-        logErr(`onunload threw an exception: err=${err?.message}`, err);
+        logErr(`onunload threw an error: err=${err?.message}`, err);
     });
 }
 

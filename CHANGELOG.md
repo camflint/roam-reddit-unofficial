@@ -2,7 +2,7 @@
 ## [0.1.2] - 2022-08-06
 ### Added
 - Support nesting all posts under a single node (with new setting).
-- Support for automatic run-once.
+- Support for automatic run-once (with new setting).
 ### Changed
 - Renamed all "Roam Reddit" strings to "Reddit Unofficial"
 ### Fixed
