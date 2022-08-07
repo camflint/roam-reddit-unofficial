@@ -1,6 +1,6 @@
 # roam-reddit-unofficial
 
-Free unofficial Reddit plug-in for Roam Research. It's intended to pull a select number of posts at a time from one or more subreddit(s) of your chosing into your daily notes page, or the currently focused page/block.
+Read-only unofficial Reddit plug-in for Roam Research. It's intended to pull a select number of posts at a time from one or more subreddit(s) of your chosing into your daily notes page, or the currently focused page/block.
 
 Useful for subreddits like from `r/lifeprotips`, `r/todayilearned`, or your own favorites.
 
